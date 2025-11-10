@@ -1,36 +1,42 @@
 #include <iostream>
 #include <fstream>
+#include <vector>
 #include <string>
-#include <sstream>
 #include <thread>
-#include <mutex> 
+#include <mutex>
+#include <shared_mutex> 
+#include <sstream>
+#include <chrono>
 
 using namespace std;
 
-class MyDataStructure {
+class MyDataStructure 
+{
+private:
     int field0 = 0;
     int field1 = 0;
-    std::mutex mx; 
-
+    mutable std::shared_mutex mx;
 public:
-    int get_field(int idx) 
+    int get_field(int field_idx) const 
 {
-        std::lock_guard<std::mutex> lock(mx);
-        if (idx == 0) return field0;
-        return field1;
+        std::shared_lock<std::shared_mutex> lock(mx);
+        if (field_idx == 0) return field0;
+        else return field1;
     }
 
-    void set_field(int idx, int val) 
+    void set_field(int field_idx, int val) 
 {
-        std::lock_guard<std::mutex> lock(mx); 
-        if (idx == 0) field0 = val;
+        std::unique_lock<std::shared_mutex> lock(mx);
+        if (field_idx == 0) field0 = val;
         else field1 = val;
     }
 
-    operator string() 
+    operator string() const 
 {
-        std::lock_guard<std::mutex> lock(mx); 
-        return "Field0: " + to_string(field0) + ", Field1: " + to_string(field1);
+        std::shared_lock<std::shared_mutex> lock(mx);
+        stringstream ss;
+        ss << "Field0: " << field0 << ", Field1: " << field1;
+        return ss.str();
     }
 };
 
@@ -39,30 +45,26 @@ MyDataStructure shared_data;
 void worker(string filename) 
 {
     ifstream f(filename);
-    if (!f.is_open()) 
-    {
-        cout << "Error opening " << filename << endl;
-        return;
-    }
+    if (!f.is_open()) return;
 
     string line, cmd;
-    int val;
+    int field_idx, val;
 
-    while (getline(f, line))
-        {
+    while (getline(f, line)) 
+    {
         stringstream ss(line);
         ss >> cmd;
-        if (cmd == "read")
+        if (cmd == "read") 
         {
-            int field_idx;
             ss >> field_idx;
             volatile int res = shared_data.get_field(field_idx);
-        } else if (cmd == "write") 
+        }
+        else if (cmd == "write") 
         {
-            int field_idx;
             ss >> field_idx >> val;
             shared_data.set_field(field_idx, val);
-        } else if (cmd == "string") 
+        }
+        else if (cmd == "string") 
         {
             string res = string(shared_data);
             volatile size_t len = res.length();
@@ -71,15 +73,49 @@ void worker(string filename)
     f.close();
 }
 
-int main() 
+void run_test(int num_threads, const vector<string>& files) 
 {
-    cout << "Starting test with basic mutex..." << endl;
-    thread t1(worker, "test_v15_1.txt");
-    thread t2(worker, "test_v15_2.txt");
+    auto start = chrono::high_resolution_clock::now();
 
-    t1.join();
-    t2.join();
+    vector<thread> threads;
+    for (int i = 0; i < num_threads; ++i)
+    {
+        threads.emplace_back(worker, files[i]);
+    }
 
-    cout << "Done with basic mutex!" << endl;
+    for (auto& t : threads) 
+    {
+        t.join();
+    }
+
+    auto end = chrono::high_resolution_clock::now();
+    chrono::duration<double, milli> diff = end - start;
+
+    cout << "Threads: " << num_threads << " | Time: " << diff.count() << " ms" << endl;
+}
+
+int main() {
+    cout << "=== Starting ===" << endl;
+
+    vector<string> files_v15 = {"test_v15_1.txt", "test_v15_2.txt", "test_v15_3.txt"};
+    vector<string> files_eq = {"test_eq_1.txt", "test_eq_2.txt", "test_eq_3.txt"};
+    vector<string> files_bad = {"test_bad_1.txt", "test_bad_2.txt", "test_bad_3.txt"};
+
+    cout << "\n--- Scenario A (Variant 15 conditions: 85% reads) ---" << endl;
+    run_test(1, files_v15);
+    run_test(2, files_v15);
+    run_test(3, files_v15);
+
+    cout << "\n--- Scenario B (Equal conditions: all 20%) ---" << endl;
+    run_test(1, files_eq);
+    run_test(2, files_eq);
+    run_test(3, files_eq);
+
+    cout << "\n--- Scenario C (Bad conditions: many writes) ---" << endl;
+    run_test(1, files_bad);
+    run_test(2, files_bad);
+    run_test(3, files_bad);
+
+    cout << "\n=== Done ===" << endl;
     return 0;
 }
